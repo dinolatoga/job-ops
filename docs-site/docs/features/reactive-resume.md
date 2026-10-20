@@ -213,6 +213,9 @@ Each theme folder contains:
 
 - `theme.json`: id, label, description, renderer kind, entrypoint, and native theme tokens
 - `main.typ`: the Typst template used by the native renderer
+- optional bundled fonts, declared in `theme.json` as `"fontPaths": ["fonts"]`
+
+Font paths are relative to the theme folder, must resolve to directories inside it, and are passed to Typst with `--font-path`. Bundle font files with their license so rendering never depends on system or remote fonts. The Modern Inter theme ships Inter 4.1 this way.
 
 After adding or changing a theme, run:
 

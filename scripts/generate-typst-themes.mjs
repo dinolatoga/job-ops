@@ -1,5 +1,13 @@
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, normalize, relative, resolve } from "node:path";
+import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,6 +66,52 @@ async function pathExists(path) {
   }
 }
 
+const FONT_FILE_PATTERN = /\.(?:ttf|otf|ttc|otc)$/i;
+
+async function assertThemeFontPaths(themeDirName, fontPaths) {
+  if (fontPaths === undefined) return;
+  assert(
+    Array.isArray(fontPaths),
+    `${themeDirName}/theme.json fontPaths must be an array`,
+  );
+
+  const themeDir = await realpath(join(themesDir, themeDirName));
+  for (const fontPath of fontPaths) {
+    assert(
+      typeof fontPath === "string" && fontPath.trim().length > 0,
+      `${themeDirName}/theme.json fontPaths entries must be non-empty strings`,
+    );
+    assertSafeThemePath(themeDirName, fontPath, "fontPaths");
+
+    const unresolved = join(themesDir, themeDirName, fontPath);
+    assert(
+      await pathExists(unresolved),
+      `${themeDirName}/${fontPath} does not exist`,
+    );
+    const resolved = await realpath(unresolved);
+    const relativePath = relative(themeDir, resolved);
+    assert(
+      !(
+        relativePath === ".." ||
+        relativePath.startsWith(`..${sep}`) ||
+        isAbsolute(relativePath)
+      ),
+      `${themeDirName}/theme.json fontPaths must stay inside its theme directory`,
+    );
+    assert(
+      (await stat(resolved)).isDirectory(),
+      `${themeDirName}/${fontPath} must be a directory`,
+    );
+    const fontFiles = (await readdir(resolved)).filter((name) =>
+      FONT_FILE_PATTERN.test(name),
+    );
+    assert(
+      fontFiles.length > 0,
+      `${themeDirName}/${fontPath} must contain at least one font file`,
+    );
+  }
+}
+
 async function readThemeManifest(themeDirName) {
   const manifestPath = join(themesDir, themeDirName, "theme.json");
   const raw = await readFile(manifestPath, "utf8");
@@ -99,6 +153,8 @@ async function readThemeManifest(themeDirName) {
     await pathExists(join(themesDir, themeDirName, manifest.entrypoint)),
     `${themeDirName}/${manifest.entrypoint} does not exist`,
   );
+
+  await assertThemeFontPaths(themeDirName, manifest.fontPaths);
 
   if (manifest.kind === "native") {
     assert(

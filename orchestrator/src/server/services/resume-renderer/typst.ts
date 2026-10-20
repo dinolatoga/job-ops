@@ -1,8 +1,16 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, normalize } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "@infra/logger";
 import { sanitizeUnknown } from "@infra/sanitize";
@@ -61,6 +69,8 @@ export interface TypstThemeManifest {
   kind: "native" | "adapted";
   entrypoint: string;
   tokens?: TypstThemeTokens;
+  /** Theme-relative directories containing fonts bundled with the theme. */
+  fontPaths?: string[];
 }
 
 function resolveThemesRoot(): string {
@@ -133,6 +143,64 @@ function parseThemeTokens(theme: TypstTheme, value: unknown): TypstThemeTokens {
   return tokens as TypstThemeTokens;
 }
 
+function parseThemeFontPaths(
+  theme: TypstTheme,
+  value: unknown,
+): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`Typst theme ${theme} fontPaths must be an array`);
+  }
+  return value.map((fontPath) => {
+    if (typeof fontPath !== "string") {
+      throw new Error(`Typst theme ${theme} fontPaths entries must be strings`);
+    }
+    assertSafeThemePath(fontPath, "fontPaths");
+    return fontPath;
+  });
+}
+
+/**
+ * Resolves theme-relative font directories to absolute paths for Typst's
+ * --font-path flag. Paths are resolved through symlinks and must remain
+ * directories inside the theme directory.
+ */
+export async function resolveTypstThemeFontPaths(
+  themeDir: string,
+  fontPaths: readonly string[] = [],
+): Promise<string[]> {
+  if (fontPaths.length === 0) return [];
+  const realThemeDir = await realpath(themeDir);
+
+  return await Promise.all(
+    fontPaths.map(async (fontPath) => {
+      assertSafeThemePath(fontPath, "fontPaths");
+      let resolved: string;
+      try {
+        resolved = await realpath(join(themeDir, fontPath));
+      } catch {
+        throw new Error(`Typst theme font path does not exist: ${fontPath}`);
+      }
+      const relativePath = relative(realThemeDir, resolved);
+      if (
+        relativePath === ".." ||
+        relativePath.startsWith(`..${sep}`) ||
+        isAbsolute(relativePath)
+      ) {
+        throw new Error(
+          "Typst theme fontPaths must stay inside its theme directory",
+        );
+      }
+      if (!(await stat(resolved)).isDirectory()) {
+        throw new Error(
+          `Typst theme font path must be a directory: ${fontPath}`,
+        );
+      }
+      return resolved;
+    }),
+  );
+}
+
 function parseThemeManifest(
   theme: TypstTheme,
   value: unknown,
@@ -172,6 +240,7 @@ function parseThemeManifest(
       value.kind === "native"
         ? parseThemeTokens(theme, value.tokens)
         : undefined,
+    fontPaths: parseThemeFontPaths(theme, value.fontPaths),
   };
 }
 
@@ -536,20 +605,17 @@ export async function readTypstTheme(theme: TypstTheme = "classic"): Promise<{
   manifest: TypstThemeManifest;
   template: string;
   tokens?: TypstThemeTokens;
+  fontPaths: string[];
 }> {
   const manifest = await readTypstThemeManifest(theme);
-  const templatePath = join(getTypstThemeDir(theme), manifest.entrypoint);
+  const themeDir = getTypstThemeDir(theme);
+  const templatePath = join(themeDir, manifest.entrypoint);
   const template = await readFile(templatePath, "utf8");
-  return { manifest, template, tokens: manifest.tokens };
-}
-
-async function loadTemplate(theme: TypstTheme): Promise<{
-  manifest: TypstThemeManifest;
-  template: string;
-  tokens?: TypstThemeTokens;
-}> {
-  const { manifest, template, tokens } = await readTypstTheme(theme);
-  return { manifest, template, tokens };
+  const fontPaths = await resolveTypstThemeFontPaths(
+    themeDir,
+    manifest.fontPaths,
+  );
+  return { manifest, template, tokens: manifest.tokens, fontPaths };
 }
 
 function replaceSharedTypstPlaceholders(
@@ -602,6 +668,8 @@ export function buildTypstDocument(
     .replace("__LINE_WIDTH__", tokens.lineWidth)
     .replace("__SECTION_BOTTOM__", tokens.sectionBottom)
     .replace("__NAME_SIZE__", tokens.nameSize)
+    .replace("__HEADLINE_SIZE__", tokens.headlineSize)
+    .replace("__CONTACT_SIZE__", tokens.contactSize)
     .replace("__PICTURE_BLOCK__", pictureBlock)
     .replace("__NAME__", escapeTypstText(document.name))
     .replace("__HEADLINE_BLOCK__", headlineBlock)
@@ -621,11 +689,22 @@ async function runTypst(args: {
   typPath: string;
   outputPath: string;
   jobId: string;
+  fontPaths: string[];
 }): Promise<void> {
   const binary = process.env.TYPST_BIN?.trim() || "typst";
+  const fontPathArgs = args.fontPaths.flatMap((fontPath) => [
+    "--font-path",
+    fontPath,
+  ]);
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(binary, ["compile", args.typPath, args.outputPath], {
+    const compileArgs = [
+      "compile",
+      ...fontPathArgs,
+      args.typPath,
+      args.outputPath,
+    ];
+    const child = spawn(binary, compileArgs, {
       cwd: args.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -730,7 +809,8 @@ export const typstResumeRenderer: ResumeRenderer = {
     const compiledPdfPath = join(tempDir, OUTPUT_FILENAME);
 
     try {
-      const { manifest, template, tokens } = await loadTemplate(typstTheme);
+      const { manifest, template, tokens, fontPaths } =
+        await readTypstTheme(typstTheme);
       const renderableDocument = await materializeResumePicture(
         document,
         tempDir,
@@ -763,6 +843,7 @@ export const typstResumeRenderer: ResumeRenderer = {
         typPath,
         outputPath: compiledPdfPath,
         jobId,
+        fontPaths,
       });
       await copyFile(compiledPdfPath, outputPath);
 

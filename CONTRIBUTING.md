@@ -142,6 +142,7 @@ Typst themes are folder-based so a theme PR can stay small:
 2. Rename the folder and set the same kebab-case value in `theme.json` as `id`.
 3. Update `label`, `description`, `entrypoint`, and native `tokens`.
 4. Edit the Typst entrypoint, usually `main.typ`.
+   To bundle fonts, add them (with their license) to a folder inside the theme and list it in `theme.json` as `"fontPaths": ["fonts"]`.
 5. Run `npm run typst-theme:generate` to refresh shared theme metadata.
 6. Run `npm run typst-theme:validate`.
 
