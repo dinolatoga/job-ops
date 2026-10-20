@@ -756,6 +756,34 @@ describe("typst resume renderer", () => {
     expect(typst).not.toContain("fonts.googleapis.com");
   });
 
+  it("keeps modern-inter leading and section rhythm comfortable for readers", async () => {
+    const { template, tokens } = await readTypstTheme("modern-inter");
+    const em = (value: string | undefined) =>
+      Number.parseFloat(value?.replace(/em$/, "") ?? "NaN");
+    const leading = em(tokens?.parLeading);
+    const itemGap = em(
+      template.match(/#set list\([\s\S]*?\n\s+spacing: ([\d.]+em),/)?.[1],
+    );
+
+    expect(tokens?.bodySize).toBe("10.5pt");
+    expect(leading).toBeGreaterThanOrEqual(0.7);
+    expect(leading).toBeLessThanOrEqual(0.8);
+    // Bullet items must sit at least as far apart as wrapped lines.
+    expect(itemGap).toBeGreaterThanOrEqual(leading);
+
+    // Section boundaries need clearly more space above a heading than the
+    // heading-to-entry gap below it (Typst uses the larger adjacent spacing).
+    const pt = (value: string | undefined) =>
+      Number.parseFloat(value?.replace(/pt$/, "") ?? "NaN");
+    const entryGap = pt(template.match(/#let entry-gap = ([\d.]+pt)/)?.[1]);
+    const sectionTop = pt(tokens?.sectionTop);
+    const sectionBottom = pt(tokens?.sectionBottom);
+    expect(sectionBottom).toBeLessThan(sectionTop);
+    expect(sectionTop).toBeGreaterThanOrEqual(
+      1.5 * Math.max(entryGap, sectionBottom),
+    );
+  });
+
   it.skipIf(!typstAvailable())(
     "renders modern-inter with the bundled Inter fonts and selectable text",
     async () => {

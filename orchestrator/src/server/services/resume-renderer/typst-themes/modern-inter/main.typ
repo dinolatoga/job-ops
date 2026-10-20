@@ -26,7 +26,7 @@
   lang: "en",
   hyphenate: false,
 )
-#set par(leading: __PAR_LEADING__, spacing: 0.7em, justify: false)
+#set par(leading: __PAR_LEADING__, spacing: 0.75em, justify: false)
 
 #show link: set text(fill: accent)
 #show strong: set text(weight: "semibold")
@@ -84,7 +84,7 @@
   marker: text(fill: muted)[•],
   indent: 0.15em,
   body-indent: 0.65em,
-  spacing: 0.65em,
+  spacing: 0.78em,
 )
 #show list: it => {
   show emph: it => text(style: "italic", it.body)
