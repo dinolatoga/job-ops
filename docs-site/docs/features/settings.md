@@ -187,7 +187,9 @@ Defaults and constraints:
   - Local Typst renderer
 - When Typst is selected, choose a Typst theme:
   - Classic
+  - Clean Print CV
   - Compact
+  - Modern Inter
 - Choose the paper size for generated PDFs:
   - Renderer default: RxResume export keeps the page format saved on the resume, LaTeX renders US Letter, and Typst renders A4
   - A4

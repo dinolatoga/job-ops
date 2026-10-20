@@ -1,10 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { TYPST_THEME_VALUES, type TypstTheme } from "@shared/types";
 import { afterEach, describe, expect, it } from "vitest";
-import { readPdfPageSizes } from "./test-utils";
+import { readPdfPageSizes, readPdfPageText } from "./test-utils";
 import type { ResumeRenderDocument } from "./types";
 import {
   buildTypstDocument,
@@ -15,10 +24,11 @@ import {
   readTypstTheme,
   readTypstThemeManifest,
   renderTypstPdf,
+  resolveTypstThemeFontPaths,
   type TypstThemeTokens,
 } from "./typst";
 
-const nativeThemes = new Set(["classic", "compact"]);
+const nativeThemes = new Set(["classic", "compact", "modern-inter"]);
 
 const baseDocument: ResumeRenderDocument = {
   name: "Jane Doe",
@@ -582,6 +592,206 @@ describe("typst resume renderer", () => {
           { width: 595, height: 842 },
         ]);
       }
+    },
+  );
+
+  describe("theme font paths", () => {
+    async function createThemeDir(): Promise<string> {
+      const root = await createTempDir();
+      tempDirs.push(root);
+      const themeDir = join(root, "theme");
+      await mkdir(join(themeDir, "fonts"), { recursive: true });
+      await mkdir(join(root, "outside"), { recursive: true });
+      await writeFile(join(themeDir, "main.typ"), "", "utf8");
+      return themeDir;
+    }
+
+    it("bundles Inter and its OFL license with the modern-inter theme", async () => {
+      const manifest = await readTypstThemeManifest("modern-inter");
+      expect(manifest.kind).toBe("native");
+      expect(manifest.fontPaths).toEqual(["fonts"]);
+
+      const { fontPaths } = await readTypstTheme("modern-inter");
+      expect(fontPaths).toHaveLength(1);
+      expect(fontPaths[0]?.replace(/\\/g, "/")).toMatch(
+        /typst-themes\/modern-inter\/fonts$/,
+      );
+      const files = await readdir(fontPaths[0] as string);
+      expect(files).toEqual(
+        expect.arrayContaining([
+          "Inter-Regular.ttf",
+          "Inter-Italic.ttf",
+          "Inter-Medium.ttf",
+          "Inter-SemiBold.ttf",
+          "Inter-Bold.ttf",
+          "Inter-BoldItalic.ttf",
+          "OFL.txt",
+        ]),
+      );
+      const license = await readFile(join(fontPaths[0] as string, "OFL.txt"));
+      expect(license.toString("utf8")).toContain(
+        "SIL Open Font License, Version 1.1",
+      );
+    });
+
+    it("keeps themes without fontPaths free of extra font directories", async () => {
+      for (const theme of ["classic", "compact", "clean-print-cv"] as const) {
+        const manifest = await readTypstThemeManifest(theme);
+        expect(manifest.fontPaths, theme).toBeUndefined();
+        expect((await readTypstTheme(theme)).fontPaths, theme).toEqual([]);
+      }
+    });
+
+    it("resolves font directories inside the theme directory", async () => {
+      const themeDir = await createThemeDir();
+      const [resolved] = await resolveTypstThemeFontPaths(themeDir, ["fonts"]);
+      expect(basename(resolved as string)).toBe("fonts");
+    });
+
+    it.each([
+      "../outside",
+      "fonts/../../outside",
+      "/etc",
+      "C:\\Windows\\Fonts",
+      "",
+    ])("rejects font path %j that escapes the theme directory", async (fontPath) => {
+      const themeDir = await createThemeDir();
+      await expect(
+        resolveTypstThemeFontPaths(themeDir, [fontPath]),
+      ).rejects.toThrow(/fontPaths/);
+    });
+
+    it("rejects symlinked font directories that point outside the theme", async () => {
+      const themeDir = await createThemeDir();
+      await symlink(join(themeDir, "..", "outside"), join(themeDir, "linked"));
+      await expect(
+        resolveTypstThemeFontPaths(themeDir, ["linked"]),
+      ).rejects.toThrow(/must stay inside its theme directory/);
+    });
+
+    it("rejects missing font directories and plain files", async () => {
+      const themeDir = await createThemeDir();
+      await expect(
+        resolveTypstThemeFontPaths(themeDir, ["missing"]),
+      ).rejects.toThrow(/does not exist/);
+      await expect(
+        resolveTypstThemeFontPaths(themeDir, ["main.typ"]),
+      ).rejects.toThrow(/must be a directory/);
+    });
+
+    it("passes theme font directories to the Typst CLI", async () => {
+      const tempDir = await createTempDir();
+      tempDirs.push(tempDir);
+      const argsPath = join(tempDir, "typst-args.txt");
+      const fakeTypst = join(tempDir, "fake-typst.sh");
+      await writeFile(
+        fakeTypst,
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$@" > "${argsPath}"`,
+          "for last; do :; done",
+          'printf "%%PDF-1.7\\n" > "$last"',
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(fakeTypst, 0o755);
+
+      const previous = process.env.TYPST_BIN;
+      process.env.TYPST_BIN = fakeTypst;
+      try {
+        for (const typstTheme of ["modern-inter", "classic"] as const) {
+          await renderTypstPdf({
+            document: baseDocument,
+            outputPath: join(tempDir, `${typstTheme}.pdf`),
+            jobId: `job-font-args-${typstTheme}`,
+            typstTheme,
+          });
+          const args = (await readFile(argsPath, "utf8")).trim().split("\n");
+          const { fontPaths } = await readTypstTheme(typstTheme);
+
+          expect(args[0], typstTheme).toBe("compile");
+          expect(args.slice(1, -2), typstTheme).toEqual(
+            fontPaths.flatMap((fontPath) => ["--font-path", fontPath]),
+          );
+          expect(args.at(-2), typstTheme).toMatch(/resume\.typ$/);
+          expect(args.at(-1), typstTheme).toMatch(/resume\.pdf$/);
+        }
+      } finally {
+        if (previous === undefined) {
+          delete process.env.TYPST_BIN;
+        } else {
+          process.env.TYPST_BIN = previous;
+        }
+      }
+    });
+  });
+
+  it("fills every placeholder in native theme templates", async () => {
+    for (const theme of TYPST_THEME_VALUES) {
+      if (!nativeThemes.has(theme)) continue;
+      const { template, tokens } = await readTypstTheme(theme);
+      const typst = buildTypstDocument(
+        baseDocument,
+        template,
+        tokens as TypstThemeTokens,
+      );
+      expect(typst, theme).not.toMatch(/__[A-Z_]+__/);
+    }
+  });
+
+  it("styles the modern-inter header from resume data with theme tokens", async () => {
+    const { template, tokens } = await readTypstTheme("modern-inter");
+    const typst = buildTypstDocument(
+      baseDocument,
+      template,
+      tokens as TypstThemeTokens,
+    );
+
+    expect(typst).toContain('#let data = json("resume-data.json")');
+    expect(typst).toContain('font: "Inter"');
+    expect(typst).toContain(`size: ${tokens?.headlineSize}`);
+    expect(typst).toContain(`size: ${tokens?.contactSize}`);
+    expect(typst).toContain("Jane Doe");
+    expect(typst).not.toContain("#image(");
+    expect(typst).not.toContain("fonts.googleapis.com");
+  });
+
+  it.skipIf(!typstAvailable())(
+    "renders modern-inter with the bundled Inter fonts and selectable text",
+    async () => {
+      const tempDir = await createTempDir();
+      tempDirs.push(tempDir);
+      const outputPath = join(tempDir, "modern-inter.pdf");
+
+      await renderTypstPdf({
+        document: {
+          ...baseDocument,
+          projects: [
+            {
+              title: "Undated Project",
+              bullets: ["Shipped with <em>care</em>."],
+            },
+          ],
+        },
+        outputPath,
+        jobId: "job-render-modern-inter",
+        typstTheme: "modern-inter",
+      });
+
+      const pdf = (await readFile(outputPath)).toString("latin1");
+      expect(pdf).toMatch(/\/BaseFont \/[A-Z]{6}\+Inter-Regular/);
+      expect(pdf).toMatch(/\/BaseFont \/[A-Z]{6}\+Inter-SemiBold/);
+      expect(pdf).toMatch(/\/URI \(mailto:jane@example\.com\)/);
+
+      const [text] = await readPdfPageText(outputPath);
+      expect(text).toContain("Jane Doe");
+      expect(text).toContain("Senior Software Engineer");
+      expect(text).toContain("London, UK");
+      expect(text).toContain("jane@example.com");
+      expect(text).toContain("Platform Engineer | Remote");
+      expect(text).toContain("2023 \u2013 Present");
+      expect(text).toContain("Undated Project");
+      expect(text).not.toContain("[]");
     },
   );
 });

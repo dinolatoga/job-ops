@@ -23,3 +23,27 @@ export async function readPdfPageSizes(
     await pdf.destroy();
   }
 }
+
+/** Extracted text content, one string per page. */
+export async function readPdfPageText(pdfPath: string): Promise<string[]> {
+  const data = new Uint8Array(await readFile(pdfPath));
+  const pdf = await getDocument({ data, useSystemFonts: true }).promise;
+
+  try {
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      pages.push(
+        content.items
+          .map((item) => ("str" in item ? item.str : ""))
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim(),
+      );
+    }
+    return pages;
+  } finally {
+    await pdf.destroy();
+  }
+}

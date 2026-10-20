@@ -1,0 +1,22 @@
+{
+  "id": "modern-inter",
+  "label": "Modern Inter",
+  "description": "A spacious, ATS-safe single-column layout set in bundled Inter.",
+  "kind": "native",
+  "entrypoint": "main.typ",
+  "fontPaths": ["fonts"],
+  "tokens": {
+    "pageMargin": "(x: 0.6in, y: 0.5in)",
+    "bodySize": "10.5pt",
+    "parLeading": "0.58em",
+    "sectionTop": "14pt",
+    "sectionBottom": "7pt",
+    "sectionSize": "9.5pt",
+    "lineWidth": "0.6pt",
+    "nameSize": "24pt",
+    "headlineSize": "12pt",
+    "contactSize": "9.5pt",
+    "entryMetaSize": "9.5pt",
+    "accent": "#1F4E79"
+  }
+}
