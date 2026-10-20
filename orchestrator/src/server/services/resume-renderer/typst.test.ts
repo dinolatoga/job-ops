@@ -771,16 +771,17 @@ describe("typst resume renderer", () => {
     // Bullet items must sit at least as far apart as wrapped lines.
     expect(itemGap).toBeGreaterThanOrEqual(leading);
 
-    // Section boundaries need clearly more space above a heading than the
-    // heading-to-entry gap below it (Typst uses the larger adjacent spacing).
+    // Major sections must separate unmistakably: at least twice the
+    // heading-to-entry gap below a heading (Typst uses the larger adjacent
+    // spacing), while the heading itself stays bound to its content.
     const pt = (value: string | undefined) =>
       Number.parseFloat(value?.replace(/pt$/, "") ?? "NaN");
     const entryGap = pt(template.match(/#let entry-gap = ([\d.]+pt)/)?.[1]);
     const sectionTop = pt(tokens?.sectionTop);
     const sectionBottom = pt(tokens?.sectionBottom);
-    expect(sectionBottom).toBeLessThan(sectionTop);
+    expect(sectionBottom).toBeLessThan(entryGap);
     expect(sectionTop).toBeGreaterThanOrEqual(
-      1.5 * Math.max(entryGap, sectionBottom),
+      2 * Math.max(entryGap, sectionBottom),
     );
   });
 
